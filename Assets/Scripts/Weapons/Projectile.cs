@@ -1,4 +1,5 @@
 using UnityEngine;
+using V8Remake.Vehicle;
 
 namespace V8Remake.Weapons
 {
@@ -11,6 +12,12 @@ namespace V8Remake.Weapons
         public GameObject impactEffectPrefab;
 
         private Rigidbody rb;
+        private GameObject shooter;
+
+        public void Initialize(GameObject shooterObject)
+        {
+            shooter = shooterObject;
+        }
 
         void Start()
         {
@@ -25,8 +32,18 @@ namespace V8Remake.Weapons
 
         void OnCollisionEnter(Collision collision)
         {
+            // Ignore collision with the shooter to prevent self-damage
+            if (shooter != null && (collision.gameObject == shooter || collision.transform.IsChildOf(shooter.transform)))
+            {
+                return;
+            }
+
             // Apply damage if we hit a destructible or another vehicle
-            // TODO: Integrate with Health/Damage system
+            DamageModel damageModel = collision.gameObject.GetComponentInParent<DamageModel>();
+            if (damageModel != null)
+            {
+                damageModel.TakeDamage(damage);
+            }
             
             if (impactEffectPrefab != null)
             {

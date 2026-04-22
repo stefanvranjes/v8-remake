@@ -47,7 +47,12 @@ namespace V8Remake.Weapons
                 
                 if (machineGunProjectile != null && currentFirePoint != null)
                 {
-                    Instantiate(machineGunProjectile, currentFirePoint.position, currentFirePoint.rotation);
+                    GameObject projGo = Instantiate(machineGunProjectile, currentFirePoint.position, currentFirePoint.rotation);
+                    Projectile proj = projGo.GetComponent<Projectile>();
+                    if (proj != null)
+                    {
+                        proj.Initialize(gameObject);
+                    }
                     fireLeftNext = !fireLeftNext; // Alternate barrels
                 }
             }
@@ -63,7 +68,12 @@ namespace V8Remake.Weapons
                 {
                     // Fire from center or specific launcher point
                     Vector3 firePos = (firePointL.position + firePointR.position) / 2f;
-                    Instantiate(specialProjectile, firePos, firePointL.rotation);
+                    GameObject projGo = Instantiate(specialProjectile, firePos, firePointL.rotation);
+                    Projectile proj = projGo.GetComponent<Projectile>();
+                    if (proj != null)
+                    {
+                        proj.Initialize(gameObject);
+                    }
                     specialAmmo--;
                 }
             }
