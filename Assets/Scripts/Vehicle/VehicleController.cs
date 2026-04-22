@@ -23,7 +23,7 @@ namespace V8Remake.Vehicle
         public Transform rearRightMesh;
 
         [Header("Engine Power")]
-        public float motorTorque = 2500f;
+        public float motorTorque = 10000f; // Increased for breakout power
         public float brakeTorque = 5000f;
         public float maxSteerAngle = 35f;
         public float topSpeed = 120f; // km/h
@@ -33,6 +33,7 @@ namespace V8Remake.Vehicle
         public float antiRoll = 3000f;
         public float driftFrictionMultiplier = 0.5f;
         public float uprightForce = 500f;
+        public float airControlTorque = 5000f;
 
         private Rigidbody rb;
         private WheelFrictionCurve defaultForwardFriction;
@@ -54,11 +55,12 @@ namespace V8Remake.Vehicle
                 t.localScale = Vector3.one;
             }
             
-            // 2. CENTERED & LOW Center of Mass (Forces the car to sit flat)
+            // 2. CENTERED & STABLE Center of Mass
             if (centerOfMass != null)
                 rb.centerOfMass = centerOfMass.localPosition;
             else
-                rb.centerOfMass = new Vector3(0, -1.0f, 0.0f);
+                // Raising COM slightly from -1.0 to -0.4 to prevent "bottoming out" on small bumps
+                rb.centerOfMass = new Vector3(0, -0.4f, 0.0f);
 
             // 3. Ignore Internal Collisions
             Collider[] allCols = GetComponentsInChildren<Collider>(true);
@@ -75,6 +77,9 @@ namespace V8Remake.Vehicle
             SanitizeWheel(frontRightWheel, false);
             SanitizeWheel(rearLeftWheel, true);
             SanitizeWheel(rearRightWheel, true);
+
+            // 5. Sanitize Body Colliders (Fixes the "Green Box" pinning the car to the ground)
+            SanitizeBodyColliders();
             
             if (inputHandler == null) inputHandler = FindObjectOfType<InputHandler>();
 
@@ -116,19 +121,24 @@ namespace V8Remake.Vehicle
             
             wheel.mass = 20f;
             wheel.radius = 0.4f; 
-            wheel.wheelDampingRate = 1.0f; // High damping for stability
-            wheel.suspensionDistance = 0.2f;
+            wheel.wheelDampingRate = 1.0f; 
+            // Increased suspension travel to help wheels reach the ground when high-centered
+            wheel.suspensionDistance = 0.4f; 
             
             JointSpring spring = wheel.suspensionSpring;
-            // Rear suspension is stiffer to prevent falling back
             spring.spring = isRear ? 45000f : 35000f;
             spring.damper = isRear ? 6000f : 4500f;
             spring.targetPosition = 0.5f;
             wheel.suspensionSpring = spring;
 
+            // High stiffness for breakout traction
             WheelFrictionCurve friction = wheel.sidewaysFriction;
-            friction.stiffness = 0.9f;
+            friction.stiffness = 1.5f; 
             wheel.sidewaysFriction = friction;
+            
+            WheelFrictionCurve fFriction = wheel.forwardFriction;
+            fFriction.stiffness = 1.5f;
+            wheel.forwardFriction = fFriction;
         }
 
         void Update()
@@ -136,10 +146,11 @@ namespace V8Remake.Vehicle
             // Update visuals in Update for maximum smoothness (FixedUpdate causes jitter)
             UpdateWheelMeshes();
 
-            // Manual Reset (Panic Button)
-            if (Input.GetKeyDown(KeyCode.R))
+            // Jump Recovery (Replaces Manual Reset)
+            // If you get stuck, pressing Space will "kick" the car up and out.
+            if (Input.GetKeyDown(KeyCode.Space))
             {
-                ResetVehicle();
+                JumpRecovery();
             }
         }
 
@@ -153,7 +164,9 @@ namespace V8Remake.Vehicle
             ApplyDownforce();
             ApplyAntiWheelie(); 
             ApplyUprightTorque();
+            ApplyAirControl(); 
             HandleDrifting();
+            HandleRampSnag(); // NEW: Prevents getting stuck on ramp edges
         }
 
         private void ApplyMotor()
@@ -171,6 +184,10 @@ namespace V8Remake.Vehicle
 
             // Brakes
             float braking = inputHandler.Handbrake ? brakeTorque : 0f;
+            
+            // Safety: If we are trying to move, force brakes to zero
+            if (Mathf.Abs(inputHandler.MoveInput.y) > 0.1f) braking = 0f;
+
             frontLeftWheel.brakeTorque = braking;
             frontRightWheel.brakeTorque = braking;
             rearLeftWheel.brakeTorque = braking;
@@ -268,14 +285,85 @@ namespace V8Remake.Vehicle
             }
         }
 
-        private void ResetVehicle()
+        private void ApplyAirControl()
         {
-            // Reset rotation and move slightly up to avoid ground clipping
-            transform.rotation = Quaternion.Euler(0, transform.rotation.eulerAngles.y, 0);
-            transform.position += Vector3.up * 1.5f;
-            rb.linearVelocity = Vector3.zero;
-            rb.angularVelocity = Vector3.zero;
-            Debug.Log("[Vehicle] Manual reset performed.");
+            // Allow manual rotation if we are in the air OR if we are moving very slowly (stuck)
+            bool frontG = frontLeftWheel.isGrounded || frontRightWheel.isGrounded;
+            bool rearG = rearLeftWheel.isGrounded || rearRightWheel.isGrounded;
+            bool anyGrounded = frontG || rearG;
+            bool isStuck = rb.linearVelocity.magnitude < 0.5f;
+
+            if (!anyGrounded || isStuck)
+            {
+                // Pitch (Forward/Backward)
+                float pitch = inputHandler.MoveInput.y * airControlTorque;
+                rb.AddRelativeTorque(Vector3.right * pitch);
+
+                // Yaw/Roll (Left/Right)
+                float yaw = inputHandler.MoveInput.x * airControlTorque;
+                rb.AddRelativeTorque(Vector3.up * yaw);
+            }
+        }
+
+        private void JumpRecovery()
+        {
+            // Apply a sudden upward and forward shove to "pop" the car out of stuck positions
+            rb.AddForce(Vector3.up * 8000f + transform.forward * 3000f, ForceMode.Impulse);
+            
+            // Add a small random torque to help "wiggle" out of tight geometry
+            rb.AddTorque(Random.insideUnitSphere * 5000f, ForceMode.Impulse);
+            
+            Debug.Log("[Vehicle] Jump Recovery performed.");
+        }
+
+        private void SanitizeBodyColliders()
+        {
+            // Create a zero-friction material for the body so it slides over ramps
+            PhysicsMaterial2D zeroFriction = new PhysicsMaterial2D("ZeroFriction");
+            // Note: For 3D we use PhysicMaterial
+            PhysicsMaterial slippery = new PhysicsMaterial("SlipperyBody");
+            slippery.dynamicFriction = 0f;
+            slippery.staticFriction = 0f;
+            slippery.frictionCombine = PhysicsMaterialCombine.Minimum;
+
+            BoxCollider[] boxes = GetComponentsInChildren<BoxCollider>();
+            foreach (BoxCollider box in boxes)
+            {
+                box.center = new Vector3(0, 0.6f, 0); 
+                box.size = new Vector3(1.6f, 0.8f, 4.5f);
+                box.material = slippery;
+            }
+
+            MeshCollider[] meshes = GetComponentsInChildren<MeshCollider>();
+            foreach (MeshCollider mesh in meshes)
+            {
+                mesh.convex = true;
+                mesh.material = slippery;
+            }
+        }
+
+        private void HandleRampSnag()
+        {
+            // If the player is trying to move but speed is near zero, apply a forward "shove"
+            // This helps the car clear the "lips" of ramps and geometry snags.
+            if (Mathf.Abs(inputHandler.MoveInput.y) > 0.1f && rb.linearVelocity.magnitude < 1.0f)
+            {
+                // Apply a combined Forward and Upward force to "climb" over the snag
+                rb.AddForce(transform.forward * 5000f + Vector3.up * 2000f, ForceMode.Force);
+            }
+        }
+
+        // Help the car slide along walls instead of sticking
+        void OnCollisionStay(Collision collision)
+        {
+            if (collision.gameObject.CompareTag("Untagged") || collision.gameObject.layer == 0)
+            {
+                foreach (ContactPoint contact in collision.contacts)
+                {
+                    // Apply a gentle force away from the wall to help sliding
+                    rb.AddForce(contact.normal * 1000f, ForceMode.Force);
+                }
+            }
         }
 
         private void HandleDrifting()
